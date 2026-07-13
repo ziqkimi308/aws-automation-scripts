@@ -31,40 +31,49 @@ A cron scheduler (`setup_cron.sh`) idempotently installs four jobs: the resource
 
 ### 1. Bash Safety & Global Scope
 **Issue:** Understanding why `set -euo pipefail` and `local` are non-negotiable in production.
+
 **Fix:** Implemented rigorous scoping. `local` protects variables inside functions (unlike Python/JS, Bash defaults to **global** scope). `pipefail` ensures a failure in any part of a pipeline (e.g., `aws ... | jq`) halts the script.
 
 ### 2. The "Subshell Trap" (Pipes vs Here-Strings)
 **Issue:** Using `echo "$instances" | while read` caused counters (`total`, `running`) to reset to `0` after the loop ended because the pipe creates a subshell.
+
 **Fix:** Switched to `while read ...; done <<< "$instances"` (Here-String). This keeps the loop running in the **current shell**, preserving variable changes.
 
 ### 3. Parsing JSON in Bash (The Base64 Hack)
 **Issue:** EC2 `Name` tags can contain spaces, newlines, or special characters that break Bash's `read` loop.
+
 **Fix:** Piped the AWS CLI output through `jq -r '.[][] | @base64'`. This encodes the entire JSON object for each instance into a single, safe line. Inside the loop, `base64 --decode` restores the data without corruption. This prevents the loop from splitting on internal newlines.
 
 ### 4. Cross-Platform Date Compatibility (Linux vs macOS)
 **Issue:** The script calculates instance age using `date -d` (Linux/GNU) which fails on macOS.
+
 **Fix:** Implemented a fallback hack: `date -d ... 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" ...`. The `||` operator gracefully switches to the macOS BSD `date` syntax when the Linux version fails.
 
 ### 5. Python `boto3` Pagination
 **Issue:** S3 `list_objects_v2` only returns 1,000 objects per API call. Without handling pagination, objects beyond the first 1,000 would be silently ignored.
+
 **Fix:** Used `client.get_paginator("list_objects_v2")`. This automatically loops through all pages and extends the `objects` list, ensuring **every** object is evaluated for deletion, regardless of bucket size.
 
 ### 6. Dry-Run Safety Pattern
 **Issue:** The S3 cleanup script is destructive.
+
 **Fix:** Wrapped the deletion logic in an `if DRY_RUN:` block. By default, `DRY_RUN=true`, meaning the script only logs what it *would* delete. Users must explicitly set `DRY_RUN=false` to execute deletions—a crucial safety net for production automation.
 
 ### 7. Cron Scheduling & Idempotence
 **Issue:** Running `setup_cron.sh` multiple times would duplicate cron jobs.
+
 **Fix:** The script dumps the current crontab to a temp file, uses `grep -qF` to check for exact matches, and only appends missing jobs. It uses `mktemp` to safely edit the crontab without corrupting the live system.
 
 ### 8. Inbound vs. Outbound Security Groups
 **Issue:** Understanding why `resource_report.py` only flags security groups with `0.0.0.0/0`.
+
 **Fix:** The script checks `IpPermissions` (Inbound). Inbound `0.0.0.0/0` is a critical security risk (exposing ports to the internet). Outbound `0.0.0.0/0` is generally safe and required for instances to reach the internet for patches/updates, so it is ignored by the audit.
 
 ## Key Technical Discussions
 
 ### Why `next()` with a Generator?
 In `resource_report.py`, we use `next((tag["Value"] for tag in ... if tag["Key"] == "Name"), "unnamed")`. 
+
 **Why not just a `for` loop?** This line is a "first-match finder." It executes the generator just long enough to find the `Name` tag. If no match exists, it returns `"unnamed"`. It is faster than building a temporary list and is standard Pythonic boilerplate for extracting optional tags.
 
 ### Bash vs Python (The Overlap)
@@ -75,8 +84,9 @@ Both `ec2_audit.sh` and `resource_report.py` query EC2.
 This project is a bootcamp for both tools, allowing you to choose the right tool based on the environment (Bash for quick CLI, Python for complex data).
 
 ### Virtual Environment Placement (`venv/`)
-**Discussion:** Placing `venv/` in the project root feels weird for a polyglot repo (since `bash/` exists).
-**Decision:** Kept it at the root per the guide's path assumptions in `setup_cron.sh`. This keeps the cron scheduler pointing to `/home/ubuntu/.../venv/bin/python` without complex relative paths.
+**Discussion:** This repository contains both Bash and Python scripts, making it a polyglot project. Placing venv/ at the root alongside the bash/ folder is unusual compared to a pure-Python project.
+
+**Decision:** The venv/ directory remains at the project root because the cron scheduler (setup_cron.sh) hardcodes the Python interpreter path as `/home/ubuntu/.../venv/bin/python3`. Keeping it at the root keeps these paths consistent and avoids navigating nested directory structures.
 
 ## Cleanup
 - Remove cron jobs: `crontab -r`
